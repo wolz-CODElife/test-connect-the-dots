@@ -1,0 +1,131 @@
+name: Step 1
+
+# This step listens for the learner creating or editing an issue comment.
+# This workflow updates from step 1 to step 2.
+
+# This will run every time we create or edit an issue comment.
+# Reference: https://docs.github.com/en/actions/learn-github-actions/events-that-trigger-workflows
+
+on:
+  issue_comment:
+    types: [created, edited]
+
+permissions:
+  # Need `contents: read` to checkout the repository.
+  # Need `contents: write` to update the step metadata.
+  contents: write
+  actions: write
+  issues: write 
+
+env: 
+  STEP_2_FILE: ".github/steps/2-find-commit-in-history.md"
+  
+jobs:
+  find_exercise:
+    name: Find Exercise Issue
+    # We'll use the skills/exercise-toolkit to find the exercise issue.
+    uses: skills/exercise-toolkit/.github/workflows/find-exercise-issue.yml@v0.3.0
+
+  check_step_work:
+    name: Check step work
+    runs-on: ubuntu-latest
+    needs: [find_exercise]
+    if: |
+      !github.event.repository.is_template
+    env:
+      ISSUE_URL: ${{ needs.find_exercise.outputs.issue-url }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Get the response templates from the exercise-toolkit repository.
+      - name: Get response templates
+        uses: actions/checkout@v4
+        with:
+          repository: skills/exercise-toolkit
+          path: exercise-toolkit
+          ref: v0.3.0
+      
+      - name: Update comment - checking work
+        run: |
+          gh issue comment "$ISSUE_URL" \
+            --body-file exercise-toolkit/markdown-templates/step-feedback/checking-work.md \
+            --edit-last
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  verify_step_work:
+    name: Verify step work
+    runs-on: ubuntu-latest
+    needs: [find_exercise, check_step_work]
+    env:
+      ISSUE_URL: ${{ needs.find_exercise.outputs.issue-url }}
+    outputs:
+      keywords_found: ${{ steps.check_keywords.outputs.keywords_found }}
+
+    steps:
+      # We'll need to check out the repository so that we can edit the README.
+      - name: Checkout
+        uses: actions/checkout@v4
+
+
+      - name: Check for keywords in issue comment
+        id: check_keywords
+        uses: actions/github-script@v7
+        with:
+          result-encoding: string
+          script: |
+            const commentBody = context.payload.comment ? context.payload.comment.body : "";
+            const issueState = context.payload.issue ? context.payload.issue.state : "";
+
+            // Normalize whitespace and case for robust matching
+            const normalizedBody = commentBody.trim().toLowerCase();
+            let found = "false";
+            if (normalizedBody.startsWith("duplicate of") || (normalizedBody.includes("duplicate") && normalizedBody.includes("#"))) {
+              found = "true";
+            }
+            core.setOutput("keywords_found", found);
+            core.debug(`Comment body: ${commentBody}, Issue state: ${issueState}, Keywords found: ${found}`);
+
+  post_next_step_content:
+    name: Post next step content
+    needs: [find_exercise, check_step_work, verify_step_work]
+    runs-on: ubuntu-latest
+
+    if: needs.verify_step_work.outputs.keywords_found == 'true'
+    env:
+      ISSUE_URL: ${{ needs.find_exercise.outputs.issue-url }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Get response templates
+        uses: actions/checkout@v4
+        with:
+          repository: skills/exercise-toolkit
+          path: exercise-toolkit
+          ref: v0.3.0
+
+      - name: Create comment - add step content
+        run: |
+          gh issue comment "$ISSUE_URL" \
+            --body-file ${{ env.STEP_2_FILE }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create comment - watching for progress
+        run: |
+          gh issue comment "$ISSUE_URL" \
+            --body-file exercise-toolkit/markdown-templates/step-feedback/watching-for-progress.md
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Disable current workflow and enable next one
+        run: |
+          gh workflow disable "Step 1"
+          gh workflow enable "Step 2"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+

@@ -1,0 +1,141 @@
+name: Step 2
+
+# This step listens for the learner creating or editing an issue comment.
+# This workflow updates from step 2 to step 3.
+
+# This will run every time we create or edit an issue comment.
+# Reference: https://docs.github.com/en/actions/learn-github-actions/events-that-trigger-workflows
+on:
+  issue_comment:
+    types: [created, edited]
+
+permissions:
+  # Need `contents: read` to checkout the repository.
+  # Need `contents: write` to update the step metadata.
+  contents: write
+  actions: write
+  issues: write
+
+env:
+  STEP_3_FILE: ".github/steps/3-fix-broken-sidebar.md"
+
+jobs:
+  find_exercise:
+    name: Find Exercise Issue
+    # We'll use the skills/exercise-toolkit to find the exercise issue.
+    uses: skills/exercise-toolkit/.github/workflows/find-exercise-issue.yml@v0.3.0
+
+  check_step_work:
+    name: Check step work
+    runs-on: ubuntu-latest
+    needs: find_exercise
+    if: |
+      !github.event.repository.is_template
+    env:
+      ISSUE_URL: ${{ needs.find_exercise.outputs.issue-url }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Get the response templates from the exercise-toolkit repository.
+      - name: Get response templates
+        uses: actions/checkout@v4
+        with:
+          repository: skills/exercise-toolkit
+          path: exercise-toolkit
+          ref: v0.3.0
+
+      - name: Update comment - checking work
+        run: |
+          gh issue comment "$ISSUE_URL" \
+            --body-file exercise-toolkit/markdown-templates/step-feedback/checking-work.md \
+            --edit-last
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # Get the current step to only run the main job when the learner is on the same step.
+  get_current_step:
+    name: Check current step number
+    runs-on: ubuntu-latest
+    outputs:
+      commit_id: ${{ steps.get_commit_id.outputs.commit_id }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - id: get_commit_id
+        run: |
+          echo "commit_id=$(cat .github/files/SIDEBARCOMMIT)" >> $GITHUB_OUTPUT
+
+
+  on_fix_the_sidebar_issue_comment:
+    name: Check if the issue comment is referencing the correct commit ID
+    runs-on: ubuntu-latest
+    needs: [find_exercise, get_current_step]
+
+    # We'll run this job only when the learner is on step 2.
+    if: >-
+      ${{ !github.event.repository.is_template && needs.get_current_step.outputs.commit_id != '' }}
+
+    steps:
+      # We'll need to check out the repository so that we can edit the README.
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # Let's get all the branches.
+
+      - name: Dump GitHub comment context
+        id: github_comment_step
+        env:
+          COMMENT_CONTEXT: ${{ toJSON(github.event.comment) }}
+        run: echo "$COMMENT_CONTEXT"
+
+      - name: Dump GitHub issue context
+        id: github_issue_step
+        env:
+          ISSUE_CONTEXT: ${{ toJSON(github.event.issue) }}
+        run: echo "$ISSUE_CONTEXT"
+
+      - name: Check if the issue comment is referencing the required commit ID
+        if: contains(github.event.comment.body, needs.get_current_step.outputs.commit_id)
+        run: echo 'Found the reference to required commit in the comment'
+
+  post_next_step_content:
+    name: Post next step content
+    needs: [find_exercise, check_step_work, get_current_step, on_fix_the_sidebar_issue_comment]
+    runs-on: ubuntu-latest
+    env:
+      ISSUE_URL: ${{ needs.find_exercise.outputs.issue-url }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Get response templates
+        uses: actions/checkout@v4
+        with:
+          repository: skills/exercise-toolkit
+          path: exercise-toolkit
+          ref: v0.1.0
+
+      - name: Create comment - add step content
+        run: |
+          gh issue comment "$ISSUE_URL" \
+            --body-file ${{ env.STEP_3_FILE }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create comment - watching for progress
+        run: |
+          gh issue comment "$ISSUE_URL" \
+            --body-file exercise-toolkit/markdown-templates/step-feedback/watching-for-progress.md
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Disable current workflow and enable next one
+        run: |
+          gh workflow disable "Step 2"
+          gh workflow enable "Step 3"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
